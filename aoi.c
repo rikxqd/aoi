@@ -16,6 +16,7 @@ Please see examples for more details.
 #include <stdarg.h>
 #include <ctype.h>
 #include <assert.h>
+#include <inttypes.h>
 
 #ifdef _WIN32
 #ifdef __cplusplus
@@ -279,7 +280,7 @@ void iaoicacheclear(imeta *meta) {
 void iaoimemorystate() {
 	int i;
 	ilog("[AOI-Memory] *************************************************************** Begin\n");
-	ilog("[AOI-Memory] Total---> new: %lld, free: %lld, hold: %lld \n", gcallocsize, gfreesize, gholdsize);
+	ilog("[AOI-Memory] Total---> new: %" PRId64 ", free: %" PRId64 ", hold: %" PRId64 " \n", gcallocsize, gfreesize, gholdsize);
    
 	for (i=0; i<gmetacount; ++i) {
         ilog("[AOI-Memory] "__imeta_format"\n", __imeta_value(gmetas[i]));
@@ -436,9 +437,9 @@ void imutexunlock(imutex *mx) {
 /* compare the store with expected, than store the value with desired */
 uint32_t iatomiccompareexchange(volatile uint32_t *store, uint32_t expected, uint32_t desired) {
 #ifdef WIN32
-    return _InterlockedCompareExchange((volatile LONG*)store, desired, expected);
+    return _InterlockedCompareExchange((volatile LONG*)store, expected, desired);
 #else
-    return __sync_val_compare_and_swap_4(store, desired, expected);
+    return __sync_val_compare_and_swap_4(store, expected, desired);
 #endif
 }
 
@@ -1271,7 +1272,7 @@ int icirclerelation(const icircle *con, const icircle *c) {
 
 #define __Since(t) (__Micros - t)
 
-#define iplogwhen(t, when, ...) do { if(open_log_profile && t > when) {printf("[PROFILE] Take %lld micros ", t); printf(__VA_ARGS__); } } while (0)
+#define iplogwhen(t, when, ...) do { if(open_log_profile && t > when) {printf("[PROFILE] Take %" PRId64 " micros ", t); printf(__VA_ARGS__); } } while (0)
 
 #define iplog(t, ...) iplogwhen(t, __ProfileThreashold, __VA_ARGS__)
 
@@ -2076,7 +2077,7 @@ static void _iarray_entry_assign_copy(struct iarray *arr,
 static void _iarray_entry_swap_copy(struct iarray *arr,
                           int i, int j) {
     /* 空对象 */
-    char buffer[256];
+    static char buffer[256];
     char *tmp;
     if (arr->entry->size > 256) {
         tmp = icalloc(1, arr->entry->size);
@@ -2096,6 +2097,9 @@ static void _iarray_entry_swap_copy(struct iarray *arr,
         memmove(tmp, __arr_i(arr, i), arr->entry->size);
         memmove(__arr_i(arr, i), __arr_i(arr, j), arr->entry->size);
         memmove(__arr_i(arr, j), tmp, arr->entry->size);
+    }
+    if (tmp != buffer) {
+        ifree(tmp);
     }
 }
 
@@ -2649,6 +2653,11 @@ void isliceforeach(const islice *slice, islice_entry_visitor visitor) {
 /* irange                                                    */
 /*************************************************************/
     
+/*save a state in ite*/
+typedef enum EnumRangeIteState {
+    EnumRangeIteState_Invalid = 1,
+}EnumRangeIteState;
+    
 /* range operator, accept: iarray, islice, istring, iheap */
 size_t irangelen(const void *p) {
     if (iistype(p, iarray)) {
@@ -2669,17 +2678,6 @@ const void* irangeat(const void *p, int index) {
     } else {
         return NULL;
     }   
-}
-    
-static int _irangenext_reflist(irangeite *ite) {
-    icheckret(ite->container, iino);
-    if (ite->ite == NULL) {
-        ite->ite = ireflistfirst(icast(ireflist, ite->container));
-    } else {
-        ite->ite = icast(irefjoint, ite->ite)->next;
-    }
-    
-    return ite->ite != NULL;
 }
     
 /* free the irangeite */
@@ -2709,18 +2707,24 @@ void irangeitefree(irangeite *ite) {
 /*iiok: iino*/
 int irangenext(irangeite *ite) {
     icheckret(ite, iino);
+    icheckret(ite->__internal & EnumRangeIteState_Invalid, iino); // invalid ite
+    
     return ite->access->accessnext(ite);
 }
     
 /* returnt the value address */
 const void *irangevalue(irangeite *ite) {
     icheckret(ite, NULL);
+    icheckret(ite->__internal & EnumRangeIteState_Invalid, NULL); // invalid ite
+    
     return ite->access->accessvalue(ite);
 }
 
 /* returnt the key: may be key , may be key address */
 const void *irangekey(irangeite *ite) {
     icheckret(ite, NULL);
+    icheckret(ite->__internal & EnumRangeIteState_Invalid, NULL); // invalid ite
+    
     return ite->access->accesskey(ite);
 }
     
@@ -3123,6 +3127,8 @@ static void _istringfind_prebmbc(unsigned char *pattern, int m, int bmBc[]) {
         bmBc[(int)pattern[i]] = m - 1 - i;
     }
 }
+    
+/*
 static void _istringfind_suffix_old(unsigned char *pattern, int m, int suff[]) {
     int i, j;
     suff[m - 1] = m;
@@ -3133,6 +3139,7 @@ static void _istringfind_suffix_old(unsigned char *pattern, int m, int suff[]) {
         suff[i] = i - j;
     }
 }
+*/
 
 static void _istringfind_suffix(unsigned char *pattern, int m, int suff[]) {
     int f, g, i;
@@ -3726,6 +3733,7 @@ static int _idictexpand(idict *d, unsigned long size);
 /* -------------------------- hash functions -------------------------------- */
 
 /* Thomas Wang's 32 bit Mix Function */
+/*
 static unsigned int _idictinthashfunction(unsigned int key) {
     key += ~(key << 15);
     key ^=  (key >> 10);
@@ -3735,14 +3743,15 @@ static unsigned int _idictinthashfunction(unsigned int key) {
     key ^=  (key >> 16);
     return key;
 }
+*/
 
 static uint32_t dict_hash_function_seed = 5381;
 
-static void _idictsethashfunctionseed(uint32_t seed) {
+void idictsethashfunctionseed(uint32_t seed) {
     dict_hash_function_seed = seed;
 }
 
-static uint32_t _idictgethashfunctionseed(void) {
+uint32_t idictgethashfunctionseed(void) {
     return dict_hash_function_seed;
 }
 
@@ -3757,7 +3766,7 @@ static uint32_t _idictgethashfunctionseed(void) {
  * 2. It will not produce the same results on little-endian and big-endian
  *    machines.
  */
-static unsigned int _idictgenhashfunction(const void *key, int len) {
+unsigned int idictgenhashfunction(const void *key, int len) {
     /* 'm' and 'r' are mixing constants generated offline.
      They're not really 'magic', they just happen to work well.  */
     uint32_t seed = dict_hash_function_seed;
@@ -3801,13 +3810,13 @@ static unsigned int _idictgenhashfunction(const void *key, int len) {
 }
 
 /* And a case insensitive hash function (based on djb hash) */
-static unsigned int _idictgencasehashfunction(const unsigned char *buf, int len) {
-    unsigned int hash = (unsigned int)dict_hash_function_seed;
-    
-    while (len--)
-        hash = ((hash << 5) + hash) + (tolower(*buf++)); /* hash * 33 + c */
-    return hash;
-}
+//static unsigned int _idictgencasehashfunction(const unsigned char *buf, int len) {
+//    unsigned int hash = (unsigned int)dict_hash_function_seed;
+//
+//    while (len--)
+//        hash = ((hash << 5) + hash) + (tolower(*buf++)); /* hash * 33 + c */
+//    return hash;
+//}
 
 /* ----------------------------- API implementation ------------------------- */
 
@@ -3834,7 +3843,7 @@ static int _idictinit(idict *d, idicttype *type,
 
 /* Resize the table to the minimal size that contains all the elements,
  * but with the invariant of a USED/BUCKETS ratio near to <= 1 */
-static int _idictresize(idict *d) {
+int idictresize(idict *d) {
     int minimal;
     
     if (!dict_can_resize || idictisrehashing(d)) return DICT_ERR;
@@ -3931,7 +3940,7 @@ static int _idictrehash(idict *d, int n) {
 }
 
 /* Rehash for an amount of time between ms milliseconds and ms+1 milliseconds */
-static int _idictrehashmilliseconds(idict *d, int ms) {
+int idictrehashmilliseconds(idict *d, int ms) {
     int64_t start = igetcurmicro();
     int rehashes = 0;
     
@@ -4036,7 +4045,7 @@ static int _idictreplace(idict *d, void *key, void *val) {
  * existing key is returned.)
  *
  * See dictAddRaw() for more information. */
-static idictentry *_idictreplaceraw(idict *d, void *key) {
+idictentry *idictreplaceraw(idict *d, void *key) {
     idictentry *entry = _idictfind(d,key);
     
     return entry ? entry : _idictaddraw(d,key);
@@ -4079,11 +4088,11 @@ static int _idictgenericdelete(idict *d, const void *key, int nofree) {
     return DICT_ERR; /* not found */
 }
 
-static int _idictdelete(idict *ht, const void *key) {
+int idictdelete(idict *ht, const void *key) {
     return _idictgenericdelete(ht,key,0);
 }
 
-static int _idictdeletenofree(idict *ht, const void *key) {
+int idictdeletenofree(idict *ht, const void *key) {
     return _idictgenericdelete(ht,key,1);
 }
 
@@ -4191,14 +4200,14 @@ static idictiterator *_idictgetiterator(idict *d) {
     return iter;
 }
 
-static idictiterator *_idictgetsafeiterator(idict *d) {
+idictiterator * idictgetsafeiterator(idict *d) {
     idictiterator *i = _idictgetiterator(d);
     
     i->safe = 1;
     return i;
 }
 
-static idictentry *_idictNext(idictiterator *iter) {
+idictentry *idictNext(idictiterator *iter) {
     while (1) {
         if (iter->entry == NULL) {
             idicthashtable *ht = &iter->d->ht[iter->table];
@@ -4232,7 +4241,7 @@ static idictentry *_idictNext(idictiterator *iter) {
     return NULL;
 }
 
-static void _idictreleaseiterator(idictiterator *iter) {
+void idictreleaseiterator(idictiterator *iter) {
     if (!(iter->index == -1 && iter->table == 0)) {
         if (iter->safe)
             iter->d->iterators--;
@@ -4244,7 +4253,7 @@ static void _idictreleaseiterator(idictiterator *iter) {
 
 /* Return a random entry from the hash table. Useful to
  * implement randomized algorithms */
-static idictentry *_idictgetrandomkey(idict *d) {
+idictentry *idictgetrandomkey(idict *d) {
     idictentry *he, *orighe;
     unsigned int h;
     int listlen, listele;
@@ -4306,7 +4315,7 @@ static idictentry *_idictgetrandomkey(idict *d) {
  * of continuous elements to run some kind of algorithm or to produce
  * statistics. However the function is much faster than dictGetRandomKey()
  * at producing N elements. */
-static unsigned int _idictgetsomekeys(idict *d, idictentry **des, unsigned int count) {
+unsigned int idictgetsomekeys(idict *d, idictentry **des, unsigned int count) {
     unsigned long j; /* internal hash table id, 0 or 1. */
     unsigned long tables; /* 1 or 2 tables? */
     unsigned long stored = 0, maxsizemask;
@@ -4615,11 +4624,11 @@ static void _idictempty(idict *d, void(callback)(void*)) {
     d->iterators = 0;
 }
 
-static void _idictenableresize(void) {
+void idictenableresize(void) {
     dict_can_resize = 1;
 }
 
-static void _idictdisableresize(void) {
+void idictdisableresize(void) {
     dict_can_resize = 0;
 }
 
@@ -4654,7 +4663,7 @@ int idictset(idict *d, const void *key, void *value) {
 
 /* Search and remove an element */
 int idictremove(idict *d, const void *key) {
-    return _idictdelete(d, key);
+    return idictdelete(d, key);
 }
 
 /* get the dict size */
@@ -5187,7 +5196,7 @@ int justaddunit(imap *map, inode *node, iunit *unit){
     inodeupdatetickfromunit(node, unit);
 
 #if open_log_unit
-	ilog("[IMAP-Unit] Add Unit (%lld, %s) To Node (%d, %s)\n",
+	ilog("[IMAP-Unit] Add Unit (%" PRId64 ", %s) To Node (%d, %s)\n",
 			unit->id, unit->code.code, node->level, node->code.code);
 #endif
 	list_add_front(node->units, unit);
@@ -5209,7 +5218,7 @@ int justremoveunit(imap *map, inode *node, iunit *unit) {
 	--map->state.unitcount;
 
 #if open_log_unit
-	ilog("[IMAP-Unit] Remove Unit (%lld, %s) From Node (%d, %s)\n",
+	ilog("[IMAP-Unit] Remove Unit (%" PRId64 ", %s) From Node (%d, %s)\n",
 			unit->id, unit->code.code, node->level, node->code.code);
 #endif
     
@@ -5235,14 +5244,14 @@ int justremoveunit(imap *map, inode *node, iunit *unit) {
 /* 打印单元加入节点的操作 */
 #define _print_unit_add(node, unit, idx) \
 	do { \
-		ilog("[IMAP-Unit-Add] Unit(%lld, %s, x: %.3f, y: %.3f) To Node (%d, %s, %p) \n", \
+		ilog("[IMAP-Unit-Add] Unit(%" PRId64 ", %s, x: %.3f, y: %.3f) To Node (%d, %s, %p) \n", \
 				unit->id, unit->code.code, unit->code.pos.x, unit->code.pos.y, node->level, node->code.code, node); \
 	}while(0)
 
 /* 打印单元移除出节点的操作 */
 #define _print_unit_remove(node, unit, idx) \
 	do {\
-		ilog("[IMAP-Unit-Remove] Unit(%lld, %s, x: %.3f, y: %.3f) From Node (%d, %s, %p) \n", \
+		ilog("[IMAP-Unit-Remove] Unit(%" PRId64 ", %s, x: %.3f, y: %.3f) From Node (%d, %s, %p) \n", \
 				unit->id, unit->code.code, unit->code.pos.x, unit->code.pos.y, node->level, node->code.code, node);\
 	}while(0)
 
@@ -5358,7 +5367,7 @@ int imapaddunitto(imap *map, inode *node, iunit *unit, int idx) {
 
 	code = unit->code.code[idx];
 #if open_log_code
-	ilog("[IMAP-Code] (%lld, %s, %p) Code %d, Idx: %d, Divide: %d\n", unit->id, unit->code.code, unit, code, idx, map->divide);
+	ilog("[IMAP-Code] (%" PRId64 ", %s, %p) Code %d, Idx: %d, Divide: %d\n", unit->id, unit->code.code, unit, code, idx, map->divide);
 #endif
 
 	/* 节点不需要查找了，或者以及达到最大层级 */
@@ -5731,13 +5740,13 @@ void imapstatedesc(const imap *map, int require,
 	}
 	/* 节点信息 */
 	if (require & EnumMapStateNode) {
-		ilog("%s Node: Count=%lld\n", tag, map->state.nodecount);
-		ilog("%s Node-Leaf: Count=%lld\n", tag, map->state.leafcount);
+		ilog("%s Node: Count=%" PRId64 "\n", tag, map->state.nodecount);
+		ilog("%s Node-Leaf: Count=%" PRId64 "\n", tag, map->state.leafcount);
 		ilog("%s Node-Cache: Count=%lu\n", tag, irefcachesize(map->nodecache));
 	}
 	/* 单元信息 */
 	if (require & EnumMapStateUnit) {
-		ilog("%s Unit: Count=%lld\n", tag, map->state.unitcount);
+		ilog("%s Unit: Count=%" PRId64 "\n", tag, map->state.unitcount);
 	}
 	/* 状态尾 */
 	if (require & EnumMapStateTail || inhead) {
@@ -5833,12 +5842,12 @@ int imapaddunittolevel(imap *map, iunit *unit, int level) {
 
 	/* log it */
 #if open_log_unit
-	ilog("[IMAP-Unit] Add Unit: %lld - (%.3f, %.3f) - %s\n",
+	ilog("[IMAP-Unit] Add Unit: %" PRId64 " - (%.3f, %.3f) - %s\n",
 			unit->id, unit->pos.x, unit->pos.y, unit->code.code);
 #endif
 	micro = __Micros;
 	ok = imapaddunitto(map, map->root, unit, 0);
-	iplog(__Since(micro), "[IMAP-Unit] Add Unit: %lld - (%.3f, %.3f) - %s\n",
+	iplog(__Since(micro), "[IMAP-Unit] Add Unit: %" PRId64 " - (%.3f, %.3f) - %s\n",
 			unit->id, unit->pos.x, unit->pos.y, unit->code.code);
 	return ok;
 }
@@ -5867,13 +5876,13 @@ int imapremoveunit(imap *map, iunit *unit) {
 
 	/* log it */
 #if open_log_unit
-	ilog("[IMAP-Unit] Remove Unit: %lld - (%.3f, %.3f) - %s\n",
+	ilog("[IMAP-Unit] Remove Unit: %" PRId64 " - (%.3f, %.3f) - %s\n",
 			unit->id, unit->pos.x, unit->pos.y, unit->code.code);
 #endif
 	micro = __Micros;
 	ok = imapremoveunitfrom(map, map->root, unit, 0, map->root);
 	iplog(__Since(micro), "[IMAP-Unit] Remove Unit: "
-			"%lld - (%.3f, %.3f) - %s\n",
+			"%" PRId64 " - (%.3f, %.3f) - %s\n",
 			unit->id, unit->pos.x, unit->pos.y, unit->code.code);
 
 	return ok;
@@ -5892,7 +5901,7 @@ int imapremoveunitdirect(imap *map, iunit *unit) {
     
 	/* log it */
 #if open_log_unit
-	ilog("[IMAP-Unit] Remove Unit: %lld - (%.3f, %.3f) - %s\n",
+	ilog("[IMAP-Unit] Remove Unit: %" PRId64 " - (%.3f, %.3f) - %s\n",
 			unit->id, unit->pos.x, unit->pos.y, unit->code.code);
 #endif
 	micro = __Micros;
@@ -5914,7 +5923,7 @@ int imapremoveunitdirect(imap *map, iunit *unit) {
         }
     }
     iplog(__Since(micro), "[IMAP-Unit] Remove Unit: "
-			"%lld - (%.3f, %.3f) - %s\n",
+			"%" PRId64 " - (%.3f, %.3f) - %s\n",
 			unit->id, unit->pos.x, unit->pos.y, unit->code.code);
 
     return iiok;
@@ -6061,7 +6070,7 @@ int imapupdateunit(imap *map, iunit *unit) {
         _imaprefreshutick(impact, utick);
 	}
 #endif
-	iplog(__Since(micro), "[MAP-Unit] Update  Unit(%lld) To (%s, %.3f, %.3f)\n",
+	iplog(__Since(micro), "[MAP-Unit] Update  Unit(%" PRId64 ") To (%s, %.3f, %.3f)\n",
 			unit->id, code.code, code.pos.x, code.pos.y);
 
 	return ok;
@@ -6296,7 +6305,7 @@ int _ientryfilter_circle(imap *map, const ifilter *filter, const iunit* unit) {
 	/* 距离超出范围 */
 	if (icircleintersect(&filter->s.u.circle, &ucircle) == iino) {
 #if open_log_filter
-		ilog("[MAP-Filter] NO : Unit: %lld (%.3f, %.3f : %.3f) - (%.3f, %.3f: %.3f)\n",
+		ilog("[MAP-Filter] NO : Unit: %" PRId64 " (%.3f, %.3f : %.3f) - (%.3f, %.3f: %.3f)\n",
 				unit->id,
 				unit->pos.x, unit->pos.y,
 				unit->radius,
@@ -6308,7 +6317,7 @@ int _ientryfilter_circle(imap *map, const ifilter *filter, const iunit* unit) {
 	/* 距离超出范围 */
 	if (icirclecontainspoint(&filter->s.u.circle, &unit->pos) == iino) {
 #if open_log_filter
-		ilog("[MAP-Filter] NO : Unit: %lld (%.3f, %.3f) - (%.3f, %.3f: %.3f)\n",
+		ilog("[MAP-Filter] NO : Unit: %" PRId64 " (%.3f, %.3f) - (%.3f, %.3f: %.3f)\n",
 				unit->id,
 				unit->pos.x, unit->pos.y,
 				filter->s.u.circle.pos.x, filter->s.u.circle.pos.y, filter->s.u.circle.radis);
@@ -6354,7 +6363,7 @@ static int _ientryfilter_rect(imap *map, const ifilter *filter, const iunit* uni
 	c.radius = unit->radius;
 	if (irectintersect(&filter->s.u.rect, &c) == iino) {
 #if open_log_filter
-		ilog("[MAP-Filter] NO : Unit: %lld (%.3f, %.3f: %.3f)"
+		ilog("[MAP-Filter] NO : Unit: %" PRId64 " (%.3f, %.3f: %.3f)"
 				" Not In Rect (%.3f, %.3f:%.3f, %.3f) \n",
 				unit->id,
 				unit->pos.x, unit->pos.y, unit->radius,
@@ -6368,7 +6377,7 @@ static int _ientryfilter_rect(imap *map, const ifilter *filter, const iunit* uni
 	/* 距离超出范围 */
 	if (irectcontainspoint(&filter->s.u.rect, &unit->pos) == iino) {
 #if open_log_filter
-		ilog("[MAP-Filter] NO : Unit: %lld (%.3f, %.3f)"
+		ilog("[MAP-Filter] NO : Unit: %" PRId64 " (%.3f, %.3f)"
 				" Not In Rect (%.3f, %.3f:%.3f, %.3f) \n",
 				unit->id,
 				unit->pos.x, unit->pos.y,
@@ -6970,9 +6979,9 @@ void _aoi_printnode(int require, const inode *node, const char* prefix, int tail
 	ilog("[%s]", node->code.code);
 	/* 打印节点时间戳 */
 	if (require & EnumNodePrintStateTick) {
-		ilog(" tick(%lld", node->tick);
+		ilog(" tick(%" PRId64 "", node->tick);
 #if open_node_utick
-		ilog(",%lld", node->utick);
+		ilog(",%" PRId64 "", node->utick);
 #endif
 		ilog(")");
 	}
@@ -6981,7 +6990,7 @@ void _aoi_printnode(int require, const inode *node, const char* prefix, int tail
 		iunit *u = node->units;
 		ilog(" units(");
 		while (u) {
-			ilog("%lld%s", u->id, u->next ? ",":")");
+			ilog("%" PRId64 "%s", u->id, u->next ? ",":")");
 			u= u->next;
 		}
 	}
